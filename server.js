@@ -367,7 +367,7 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  🎨 Fake Artist est lancé !\n`);
+  console.log(`\n  🎨 Gribouille est lancé !\n`);
   console.log(`  Sur cet ordinateur : http://localhost:${PORT}`);
   for (const nets of Object.values(os.networkInterfaces())) {
     for (const n of nets || []) {

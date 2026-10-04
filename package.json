@@ -1,7 +1,7 @@
 {
-  "name": "fake-artist",
+  "name": "gribouille",
   "version": "1.0.0",
-  "description": "Fake Artist — jeu de dessin multijoueur avec un imposteur",
+  "description": "Gribouille — jeu de dessin multijoueur avec un imposteur",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

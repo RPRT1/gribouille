@@ -141,7 +141,7 @@
   $('#codeBig').onclick = $('#copyCode').onclick = () => copy(S.code, 'Code copié');
   $('#copyLink').onclick = async () => {
     if (navigator.share) {
-      try { await navigator.share({ title: 'Fake Artist', text: `Rejoins ma partie de Fake Artist ! Code : ${S.code}`, url: shareUrl() }); return; }
+      try { await navigator.share({ title: 'Gribouille', text: `Rejoins ma partie de Gribouille ! Code : ${S.code}`, url: shareUrl() }); return; }
       catch (e) { if (e.name === 'AbortError') return; }
     }
     copy(shareUrl(), 'Lien copié');
@@ -245,7 +245,7 @@
     $('#actions').classList.toggle('show', mine);
     $('#submitBtn').disabled = !cur || drawingNow;
     $('#clearBtn').disabled = !cur || drawingNow;
-    document.title = mine ? '✏️ À toi ! — Fake Artist' : 'Fake Artist';
+    document.title = mine ? '✏️ À toi ! — Gribouille' : 'Gribouille';
   }
 
   function strokeCount(id) { return S.strokes.filter((s) => s.pid === id).length; }
@@ -439,7 +439,7 @@
     if (screen !== 'game') {
       $$('.overlay').forEach((o) => o.classList.remove('show'));
       $('#reopenResults').classList.remove('show');
-      document.title = 'Fake Artist';
+      document.title = 'Gribouille';
     }
   }
 

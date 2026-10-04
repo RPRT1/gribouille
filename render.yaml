@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: fake-artist
+    name: gribouille
     runtime: node
     plan: free
     buildCommand: npm install
