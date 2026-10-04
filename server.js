@@ -2,12 +2,16 @@ const express = require('express');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const compression = require('compression');
 const { Server } = require('socket.io');
 const WORDS = require('./words');
 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 10;
 const MIN_PLAYERS = 3;
+// Coordonnées entières sur une grille 0..GRID (plus compact qu'un flottant en JSON).
+const GRID = 1000;
+const MAX_COORDS = 4000;
 const COLORS = [
   '#E8453C', '#2F7DE1', '#F2A12E', '#2FAE66', '#8B5CF6',
   '#EC4899', '#0EA5B7', '#8A5A3B', '#475569', '#F97316'
@@ -15,7 +19,13 @@ const COLORS = [
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  maxHttpBufferSize: 64 * 1024,
+  // Seuls les gros messages (resynchronisation des traits) sont compressés.
+  perMessageDeflate: { threshold: 1024 },
+  httpCompression: { threshold: 1024 }
+});
+app.use(compression());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const rooms = new Map();
@@ -64,13 +74,14 @@ function isCorrect(guess, word) {
   if (!g) return false;
   return g === w || (w.length >= 5 && lev(g, w) <= 1);
 }
-function cleanPoints(pts) {
-  if (!Array.isArray(pts) || pts.length % 2 || pts.length > 4000) return null;
-  const out = new Array(pts.length);
-  for (let i = 0; i < pts.length; i++) {
-    const v = Number(pts[i]);
-    if (!Number.isFinite(v)) return null;
-    out[i] = Math.min(1, Math.max(0, Math.round(v * 10000) / 10000));
+function cleanCoords(arr, from) {
+  const n = arr.length - from;
+  if (n < 0 || n % 2) return null;
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = arr[from + i];
+    if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+    out[i] = Math.min(GRID, Math.max(0, Math.round(v)));
   }
   return out;
 }
@@ -94,14 +105,15 @@ const currentPid = (room) => (room.phase === 'drawing' ? room.order[room.turnInd
 function stateFor(room, pid) {
   const s = {
     code: room.code, me: pid, hostId: room.hostId, phase: room.phase, game: room.game,
-    settings: room.settings, categories: Object.keys(WORDS),
+    settings: room.settings,
     players: room.players.map((p) => ({
       id: p.id, name: p.name, color: p.color, connected: p.connected, score: p.score,
       ready: p.ready, voted: room.phase === 'voting' && !!room.votes[p.id]
     })),
     order: room.order, turnIndex: room.turnIndex, totalTurns: totalTurns(room),
-    currentPid: currentPid(room), strokes: room.strokes
+    currentPid: currentPid(room), sc: room.strokes.length
   };
+  if (room.phase === 'lobby') s.categories = Object.keys(WORDS);
   if (room.phase !== 'lobby') {
     const imp = pid === room.imposterId;
     s.role = { isImposter: imp, category: room.category, word: imp ? null : room.word };
@@ -113,6 +125,11 @@ function stateFor(room, pid) {
 }
 function broadcast(room) {
   for (const p of room.players) if (p.socketId) io.to(p.socketId).emit('state', stateFor(room, p.id));
+}
+// Envoi complet des traits : uniquement à l'arrivée d'un joueur ou en cas de désynchronisation.
+function sendStrokes(socket, room) {
+  const live = room.live && room.live.turn === room.turnIndex ? room.live : null;
+  socket.emit('strokes', { game: room.game, list: room.strokes, live });
 }
 
 /* ---------- game flow ---------- */
@@ -280,7 +297,7 @@ io.on('connection', (socket) => {
     // Un joueur qui revient pendant son tour reprend la main.
     if (room.phase === 'reveal') checkAllReady(room);
     broadcast(room);
-    if (room.live) socket.emit('live', room.live);
+    sendStrokes(socket, room);
   });
 
   socket.on('leave', () => leave(true));
@@ -331,23 +348,41 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
-  socket.on('stroke:live', (pts) => {
-    const { room, me } = ctx();
-    if (!room || currentPid(room) !== me.id) return;
-    const points = cleanPoints(pts);
-    if (!points) return;
-    room.live = { pid: me.id, color: me.color, points, turn: room.turnIndex };
-    socket.to(room.code).emit('live', room.live);
+  socket.on('sync', () => {
+    const { room } = ctx();
+    if (room) sendStrokes(socket, room);
   });
 
-  socket.on('stroke:submit', (pts) => {
+  // Dessin en direct, envoyé en différentiel : [début, x1, y1, x2, y2, …].
+  // Un début à 0 remplace le trait (nouveau trait ou « Recommencer »).
+  socket.on('l', (msg) => {
+    const { room, me } = ctx();
+    if (!room || currentPid(room) !== me.id || !Array.isArray(msg) || msg.length > MAX_COORDS + 1) return;
+    const start = msg[0];
+    const coords = cleanCoords(msg, 1);
+    if (!coords) return;
+    const live = room.live && room.live.turn === room.turnIndex ? room.live : null;
+    if (start === 0) {
+      room.live = { pid: me.id, color: me.color, points: coords, turn: room.turnIndex };
+    } else if (live && start === live.points.length && start + coords.length <= MAX_COORDS) {
+      for (const c of coords) live.points.push(c);
+    } else {
+      return socket.emit('lr');
+    }
+    socket.to(room.code).emit('l', [room.turnIndex, start, ...coords]);
+  });
+
+  // Validation : le serveur a déjà tous les points, le client n'envoie que leur nombre.
+  socket.on('submit', (n, cb = () => {}) => {
     const { room, me } = ctx();
     if (!room || currentPid(room) !== me.id) return;
-    const points = cleanPoints(pts);
-    if (!points || points.length < 2) return;
-    room.strokes.push({ pid: me.id, color: me.color, points });
+    const live = room.live && room.live.turn === room.turnIndex ? room.live : null;
+    if (!live || live.points.length !== n || n < 2) return cb({ resync: true });
+    room.strokes.push({ pid: me.id, color: me.color, points: live.points });
+    io.to(room.code).emit('k', { i: room.strokes.length - 1, turn: room.turnIndex, pid: me.id, color: me.color, n });
     advance(room);
     broadcast(room);
+    cb({ ok: true });
   });
 
   socket.on('vote', (target) => {

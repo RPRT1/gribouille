@@ -1,7 +1,8 @@
 (() => {
   'use strict';
 
-  const socket = io();
+  // WebSocket direct (pas de phase de polling HTTP), avec repli automatique si bloqué.
+  const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -17,6 +18,9 @@
     del(k) { try { sessionStorage.removeItem(k); } catch { /* ignore */ } }
   };
 
+  const GRID = 1000;        // doit correspondre au serveur
+  const MAX_COORDS = 4000;
+
   let pid = tab.get('fa_pid');
   if (!pid) {
     pid = Math.random().toString(36).slice(2) + Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -25,7 +29,10 @@
 
   /* ---------- état ---------- */
   let S = null;            // état serveur
-  let live = null;         // trait en cours d'un autre joueur
+  let live = null;         // trait en cours d'un autre joueur : { turn, points, bad }
+  let strokes = [];        // traits validés, tenus localement (le serveur n'envoie que les nouveaux)
+  let strokesGame = -1;
+  let syncing = false;
   let cur = null;          // mon trait (en cours ou en attente de validation)
   let drawingNow = false;
   let highlight = null;    // joueur dont on met les traits en avant
@@ -80,19 +87,54 @@
       const prevGame = lastKey.split(':')[0];
       lastKey = key;
       live = null; cur = null; drawingNow = false;
+      sentLen = 0; clearTimeout(liveTimer); liveTimer = null; layerDirty = true;
       if (String(s.game) !== prevGame) { flipped = false; wordMasked = false; highlight = null; }
       if (s.phase !== 'results') resultsHidden = false;
       if (s.phase === 'results') highlight = null;
     }
+    if (s.game !== strokesGame) { strokes = []; strokesGame = s.game; layerDirty = true; }
+    if (s.sc !== strokes.length) requestSync();
     if (!prevTurnMine && myTurn() && navigator.vibrate) navigator.vibrate(60);
     render();
   });
 
-  socket.on('live', (l) => {
-    if (!S || l.pid === pid || l.pid !== S.currentPid || l.turn !== S.turnIndex) return;
-    live = l;
+  function requestSync() {
+    if (syncing) return;
+    syncing = true;
+    socket.emit('sync');
+  }
+  socket.on('strokes', (d) => {
+    syncing = false;
+    strokes = d.list;
+    strokesGame = d.game;
+    layerDirty = true;
+    if (d.live && d.live.pid !== pid) live = { turn: d.live.turn, points: d.live.points, bad: false };
+    if (S) render();
+  });
+
+  // Dessin en direct d'un autre joueur : [tour, début, x1, y1, …].
+  socket.on('l', (m) => {
+    if (!S || m[0] !== S.turnIndex) return;
+    const start = m[1];
+    if (start === 0) live = { turn: m[0], points: m.slice(2), bad: false };
+    else if (live && live.turn === m[0] && start === live.points.length) {
+      for (let i = 2; i < m.length; i++) live.points.push(m[i]);
+    } else if (live) live.bad = true;
+    else return;
     requestDraw();
   });
+
+  // Trait validé : on le reconstruit à partir des points déjà reçus en direct.
+  socket.on('k', (k) => {
+    const src = k.pid === pid ? cur : (live && live.turn === k.turn && !live.bad ? live.points : null);
+    if (src && src.length === k.n && k.i === strokes.length) {
+      strokes.push({ pid: k.pid, color: k.color, points: src.slice() });
+      layerDirty = true;
+    } else requestSync();
+  });
+
+  // Le serveur a perdu le fil de mon trait : tout renvoyer.
+  socket.on('lr', () => { sentLen = 0; sendLive(true); });
 
   socket.on('kicked', () => {
     tab.del('fa_room'); S = null; render();
@@ -248,7 +290,7 @@
     document.title = mine ? '✏️ À toi ! — Gribouille' : 'Gribouille';
   }
 
-  function strokeCount(id) { return S.strokes.filter((s) => s.pid === id).length; }
+  function strokeCount(id) { return strokes.filter((s) => s.pid === id).length; }
   function votesFor(id, votes) { return Object.entries(votes || {}).filter(([, t]) => t === id).map(([v]) => player(v)).filter(Boolean); }
 
   function renderSide() {
@@ -260,7 +302,7 @@
 
     if (S.phase === 'reveal' || S.phase === 'drawing') {
       title.textContent = 'Ordre de passage';
-      meta.textContent = `${S.strokes.length} / ${S.totalTurns} traits`;
+      meta.textContent = `${strokes.length} / ${S.totalTurns} traits`;
       list.innerHTML = S.order.map((id, i) => {
         const p = player(id); if (!p) return '';
         const done = strokeCount(id);
@@ -309,6 +351,7 @@
     list.querySelectorAll('[data-hl]').forEach((li) => li.onclick = (e) => {
       if (e.target.closest('[data-vote]')) return;
       highlight = highlight === li.dataset.hl ? null : li.dataset.hl;
+      layerDirty = true;
       renderSide(); requestDraw();
     });
     list.querySelectorAll('[data-vote]').forEach((b) => b.onclick = () => socket.emit('vote', b.dataset.vote));
@@ -464,32 +507,37 @@
     requestAnimationFrame(drawBoard);
   }
 
-  function strokePath(pts, color, alpha = 1) {
+  // Les traits validés sont dessinés une seule fois dans un calque hors écran ;
+  // à chaque image on ne redessine que le trait en cours par-dessus.
+  const layer = document.createElement('canvas');
+  const lctx = layer.getContext('2d');
+  let layerDirty = true;
+
+  function strokePath(c, pts, color, alpha = 1) {
     const n = pts.length / 2;
     if (!n) return;
-    const s = board.width;
-    const lw = s * 0.012;
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.lineWidth = lw;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    const s = c.canvas.width / GRID;
+    const lw = c.canvas.width * 0.012;
+    c.globalAlpha = alpha;
+    c.strokeStyle = color;
+    c.fillStyle = color;
+    c.lineWidth = lw;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.beginPath();
     if (n === 1) {
-      ctx.beginPath();
-      ctx.arc(pts[0] * s, pts[1] * s, lw / 2, 0, Math.PI * 2);
-      ctx.fill();
+      c.arc(pts[0] * s, pts[1] * s, lw / 2, 0, Math.PI * 2);
+      c.fill();
       return;
     }
-    ctx.beginPath();
-    ctx.moveTo(pts[0] * s, pts[1] * s);
+    c.moveTo(pts[0] * s, pts[1] * s);
     for (let i = 1; i < n - 1; i++) {
       const x = pts[i * 2] * s, y = pts[i * 2 + 1] * s;
       const nx = pts[i * 2 + 2] * s, ny = pts[i * 2 + 3] * s;
-      ctx.quadraticCurveTo(x, y, (x + nx) / 2, (y + ny) / 2);
+      c.quadraticCurveTo(x, y, (x + nx) / 2, (y + ny) / 2);
     }
-    ctx.lineTo(pts[(n - 1) * 2] * s, pts[(n - 1) * 2 + 1] * s);
-    ctx.stroke();
+    c.lineTo(pts[(n - 1) * 2] * s, pts[(n - 1) * 2 + 1] * s);
+    c.stroke();
   }
 
   function drawBoard() {
@@ -497,36 +545,48 @@
     ctx.globalAlpha = 1;
     ctx.clearRect(0, 0, board.width, board.height);
     if (!S || S.phase === 'lobby') return;
-    for (const st of S.strokes) strokePath(st.points, st.color, highlight && st.pid !== highlight ? 0.12 : 1);
-    if (live && live.points.length) strokePath(live.points, live.color);
-    if (cur && cur.length && me()) strokePath(cur, me().color);
+    if (layer.width !== board.width) { layer.width = board.width; layer.height = board.height; layerDirty = true; }
+    if (layerDirty) {
+      layerDirty = false;
+      lctx.clearRect(0, 0, layer.width, layer.height);
+      for (const st of strokes) strokePath(lctx, st.points, st.color, highlight && st.pid !== highlight ? 0.12 : 1);
+      lctx.globalAlpha = 1;
+    }
+    ctx.drawImage(layer, 0, 0);
+    const curP = player(S.currentPid);
+    if (live && live.points.length && curP && S.currentPid !== pid) strokePath(ctx, live.points, curP.color);
+    if (cur && cur.length && me()) strokePath(ctx, cur, me().color);
     ctx.globalAlpha = 1;
   }
 
   /* ---------- dessin ---------- */
-  let liveAt = 0, liveTimer = null;
+  // Seuls les nouveaux points partent, toutes les 50 ms au plus.
+  let liveAt = 0, liveTimer = null, sentLen = 0;
   function sendLive(force) {
     const now = performance.now();
-    if (force || now - liveAt > 40) {
+    if (force || now - liveAt >= 50) {
       liveAt = now;
       clearTimeout(liveTimer); liveTimer = null;
-      socket.emit('stroke:live', cur || []);
+      const pts = cur || [];
+      if (sentLen > 0 && sentLen === pts.length) return;
+      socket.emit('l', [sentLen, ...pts.slice(sentLen)]);
+      sentLen = pts.length;
     } else if (!liveTimer) {
-      liveTimer = setTimeout(() => sendLive(true), 40);
+      liveTimer = setTimeout(() => sendLive(true), 50 - (now - liveAt));
     }
   }
 
   function addPoint(e) {
-    if (cur.length >= 3998) return;
+    if (cur.length >= MAX_COORDS) return;
     const r = board.getBoundingClientRect();
-    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    const x = Math.round(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * GRID);
+    const y = Math.round(Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) * GRID);
     const n = cur.length;
     if (n) {
       const dx = x - cur[n - 2], dy = y - cur[n - 1];
-      if (dx * dx + dy * dy < 0.000006) return;
+      if (dx * dx + dy * dy < 6) return;
     }
-    cur.push(Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000);
+    cur.push(x, y);
   }
 
   board.addEventListener('pointerdown', (e) => {
@@ -535,6 +595,7 @@
     board.setPointerCapture(e.pointerId);
     drawingNow = true;
     cur = [];
+    sentLen = 0;
     addPoint(e);
     requestDraw();
     sendLive(true);
@@ -559,6 +620,7 @@
 
   $('#clearBtn').onclick = () => {
     cur = null;
+    sentLen = 0;
     sendLive(true);
     requestDraw();
     renderStatus();
@@ -566,7 +628,13 @@
   $('#submitBtn').onclick = () => {
     if (!cur || !cur.length || drawingNow) return;
     $('#submitBtn').disabled = true;
-    socket.emit('stroke:submit', cur);
+    sendLive(true);
+    socket.emit('submit', cur.length, (res) => {
+      if (!res || !res.resync || !cur) return;
+      sentLen = 0;
+      sendLive(true);
+      socket.emit('submit', cur.length);
+    });
   };
   document.addEventListener('keydown', (e) => {
     if (!myTurn() || e.target.tagName === 'INPUT') return;
