@@ -5,6 +5,7 @@ const path = require('path');
 const compression = require('compression');
 const { Server } = require('socket.io');
 const WORDS = require('./words');
+const WORD_COUNTS = Object.fromEntries(Object.entries(WORDS).map(([c, l]) => [c, l.length]));
 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 10;
@@ -69,10 +70,18 @@ function lev(a, b) {
   }
   return dp[b.length];
 }
-function isCorrect(guess, word) {
+// Comparaison tolérante (« photographie » pour « Photographe ») : ce n'est qu'une
+// suggestion, c'est l'arbitre qui tranche.
+function isClose(guess, word) {
   const g = normalize(guess), w = normalize(word);
   if (!g) return false;
-  return g === w || (w.length >= 5 && lev(g, w) <= 1);
+  if (g === w) return true;
+  const short = Math.min(g.length, w.length);
+  const tol = w.length >= 10 ? 3 : w.length >= 7 ? 2 : w.length >= 4 ? 1 : 0;
+  if (lev(g, w) <= tol) return true;
+  let pre = 0;
+  while (pre < short && g[pre] === w[pre]) pre++;
+  return pre >= 5 && pre >= short * 0.7;
 }
 function cleanCoords(arr, from) {
   const n = arr.length - from;
@@ -86,13 +95,22 @@ function cleanCoords(arr, from) {
   return out;
 }
 
+/* ---------- rôles ---------- */
+// Nombre minimum de joueurs connectés pour que l'option s'applique.
+const ROLE_MIN = {
+  detective: 4, aveugle: 4, complice: 5, bouffon: 5, gardien: 5, saboteur: 6, duo: 7, voisin: 3
+};
+const EXTRA_ROLES = ['complice', 'saboteur', 'detective', 'aveugle', 'bouffon', 'gardien'];
+const IMP_TEAM = ['imposter', 'complice', 'saboteur'];
+
 /* ---------- room helpers ---------- */
 function createRoom() {
   const room = {
     code: makeCode(), hostId: null, players: [], phase: 'lobby', game: 0,
-    settings: { rounds: 2, category: 'mix' }, used: new Set(),
-    word: null, category: null, imposterId: null, order: [], turnIndex: 0,
-    strokes: [], live: null, votes: {}, accusedId: null, result: null, cleanup: null
+    settings: { rounds: 2, category: 'mix', roles: Object.fromEntries(Object.keys(ROLE_MIN).map((k) => [k, false])) },
+    used: new Set(), word: null, decoy: null, category: null, roles: {}, imposterIds: [], order: [], turnIndex: 0,
+    strokes: [], live: null, votes: {}, accusedId: null, excluded: [], gardienId: null, inspect: null,
+    pending: null, result: null, cleanup: null
   };
   rooms.set(room.code, room);
   return room;
@@ -101,11 +119,20 @@ const getP = (room, id) => room.players.find((p) => p.id === id);
 const online = (room) => room.players.filter((p) => p.connected);
 const totalTurns = (room) => room.order.length * room.settings.rounds;
 const currentPid = (room) => (room.phase === 'drawing' ? room.order[room.turnIndex % room.order.length] : null);
+const roleOf = (room, id) => room.roles[id] || 'artist';
+// Celui qui valide le mot proposé par l'imposteur : l'hôte, sauf s'il est dans l'équipe de l'imposteur.
+function judgeId(room) {
+  const fair = (p) => p && p.connected && !IMP_TEAM.includes(roleOf(room, p.id));
+  const host = getP(room, room.hostId);
+  if (fair(host)) return host.id;
+  const p = room.players.find(fair);
+  return p ? p.id : null;
+}
 
 function stateFor(room, pid) {
   const s = {
     code: room.code, me: pid, hostId: room.hostId, phase: room.phase, game: room.game,
-    settings: room.settings,
+    settings: room.settings, roleMin: ROLE_MIN,
     players: room.players.map((p) => ({
       id: p.id, name: p.name, color: p.color, connected: p.connected, score: p.score,
       ready: p.ready, voted: room.phase === 'voting' && !!room.votes[p.id]
@@ -113,13 +140,25 @@ function stateFor(room, pid) {
     order: room.order, turnIndex: room.turnIndex, totalTurns: totalTurns(room),
     currentPid: currentPid(room), sc: room.strokes.length
   };
-  if (room.phase === 'lobby') s.categories = Object.keys(WORDS);
+  if (room.phase === 'lobby') { s.categories = Object.keys(WORDS); s.wordCounts = WORD_COUNTS; }
   if (room.phase !== 'lobby') {
-    const imp = pid === room.imposterId;
-    s.role = { isImposter: imp, category: room.category, word: imp ? null : room.word };
+    const r = roleOf(room, pid);
+    const revealed = ['guess', 'validate', 'results'].includes(room.phase);
+    // En mode « mot voisin », l'imposteur croit être un artiste jusqu'au dénouement.
+    const hidden = r === 'imposter' && room.decoy && !revealed;
+    s.role = {
+      id: hidden ? 'artist' : r, isImposter: r === 'imposter' && !hidden, category: room.category,
+      word: r === 'imposter' ? (hidden ? room.decoy : null) : room.word, neighbor: !!room.decoy
+    };
+    if (r === 'imposter' && !hidden && room.decoy) s.role.decoy = room.decoy;
+    if (r === 'complice') s.role.partners = room.imposterIds;
+    if (r === 'detective') s.role.inspect = room.inspect;
     if (room.votes[pid]) s.myVote = room.votes[pid];
+    s.excluded = room.excluded;
+    s.gardienId = room.gardienId;
   }
-  if (room.phase === 'guess') s.accusedId = room.accusedId;
+  if (room.phase === 'guess' || room.phase === 'validate') s.accusedId = room.accusedId;
+  if (room.phase === 'validate') s.pending = { ...room.pending, judgeId: judgeId(room) };
   if (room.phase === 'results') s.result = room.result;
   return s;
 }
@@ -133,6 +172,27 @@ function sendStrokes(socket, room) {
 }
 
 /* ---------- game flow ---------- */
+function assignRoles(room) {
+  const n = room.players.length;
+  const on = (k) => room.settings.roles[k] && n >= ROLE_MIN[k];
+  const ids = shuffle(room.players.map((p) => p.id));
+  const nImp = on('duo') ? 2 : 1;
+  room.roles = {};
+  room.imposterIds = ids.slice(0, nImp);
+  room.imposterIds.forEach((id) => { room.roles[id] = 'imposter'; });
+  let next = nImp;
+  let impTeam = nImp;
+  for (const r of EXTRA_ROLES.filter(on)) {
+    if (next >= n - 1) break; // toujours au moins un artiste ordinaire
+    const bad = r === 'complice' || r === 'saboteur';
+    if (bad && (impTeam + 1) * 2 >= n) continue; // l'équipe de l'imposteur reste minoritaire
+    room.roles[ids[next++]] = r;
+    if (bad) impTeam++;
+  }
+  const others = WORDS[room.category].filter((w) => w !== room.word);
+  room.decoy = on('voisin') && others.length ? rand(others) : null;
+}
+
 function startGame(room) {
   room.players = online(room);
   const cats = room.settings.category === 'mix' ? Object.keys(WORDS) : [room.settings.category];
@@ -144,10 +204,10 @@ function startGame(room) {
   }
   room.word = rand(pool);
   room.used.add(room.word);
-  room.imposterId = rand(room.players).id;
+  assignRoles(room);
   // L'imposteur ne commence jamais : il doit d'abord voir au moins un trait.
   const order = shuffle(room.players.map((p) => p.id));
-  if (order[0] === room.imposterId) order.push(order.shift());
+  while (room.imposterIds.includes(order[0])) order.push(order.shift());
   room.order = order;
   room.players.forEach((p) => { p.ready = false; });
   room.turnIndex = 0;
@@ -155,6 +215,10 @@ function startGame(room) {
   room.live = null;
   room.votes = {};
   room.accusedId = null;
+  room.excluded = [];
+  room.gardienId = null;
+  room.inspect = null;
+  room.pending = null;
   room.result = null;
   room.game++;
   room.phase = 'reveal';
@@ -188,27 +252,43 @@ function checkVotes(room) {
   Object.values(room.votes).forEach((t) => { counts[t] = (counts[t] || 0) + 1; });
   const max = Math.max(0, ...Object.values(counts));
   const tops = Object.keys(counts).filter((k) => counts[k] === max);
-  room.accusedId = tops.length === 1 ? tops[0] : null;
-  if (room.accusedId === room.imposterId && getP(room, room.imposterId)?.connected) {
+  const accused = tops.length === 1 ? tops[0] : null;
+  // Le Gardien accusé se dévoile : le vote est annulé et on revote sans lui.
+  if (accused && roleOf(room, accused) === 'gardien' && !room.gardienId) {
+    room.gardienId = accused;
+    room.excluded.push(accused);
+    room.votes = {};
+    return;
+  }
+  room.accusedId = accused;
+  if (accused && room.imposterIds.includes(accused) && getP(room, accused)?.connected) {
     room.phase = 'guess';
   } else {
-    finish(room, null);
+    finish(room);
   }
 }
 
-function finish(room, guess) {
-  const caught = room.accusedId === room.imposterId;
-  const guessCorrect = guess != null && isCorrect(guess, room.word);
-  const imposterWins = !caught || guessCorrect;
+function finish(room, guess = null, accepted = false, judge = null) {
+  const accused = room.accusedId;
+  const caught = !!accused && room.imposterIds.includes(accused);
+  const guessCorrect = caught && guess != null && !!accepted;
+  const winner = accused && roleOf(room, accused) === 'bouffon' ? 'bouffon'
+    : !caught || guessCorrect ? 'imposters' : 'artists';
+  const deltas = {};
   for (const p of room.players) {
-    if (p.id === room.imposterId) { if (imposterWins) p.score += 2; }
-    else if (!imposterWins) p.score += 1;
+    const r = roleOf(room, p.id);
+    let d = 0;
+    if (winner === 'bouffon') d = r === 'bouffon' ? 3 : 0;
+    else if (winner === 'imposters') d = r === 'imposter' ? 2 : r === 'complice' || r === 'saboteur' ? 1 : 0;
+    else d = IMP_TEAM.includes(r) || r === 'bouffon' ? 0 : 1;
+    if (d) { p.score += d; deltas[p.id] = d; }
   }
   room.result = {
-    imposterId: room.imposterId, word: room.word, category: room.category,
-    votes: { ...room.votes }, accusedId: room.accusedId, tie: room.accusedId === null,
-    caught, guess, guessCorrect, imposterWins
+    imposterIds: room.imposterIds, roles: { ...room.roles }, word: room.word, decoy: room.decoy,
+    category: room.category, votes: { ...room.votes }, accusedId: accused, tie: accused === null,
+    caught, guess, guessCorrect, winner, deltas, judgeId: judge, gardienId: room.gardienId
   };
+  room.pending = null;
   room.phase = 'results';
 }
 
@@ -222,12 +302,13 @@ function onPlayerGone(room, p) {
     room.cleanup = setTimeout(() => rooms.delete(room.code), 15 * 60 * 1000);
     return;
   }
-  if (['reveal', 'drawing', 'voting', 'guess'].includes(room.phase) && online(room).length < 2) {
+  if (['reveal', 'drawing', 'voting', 'guess', 'validate'].includes(room.phase) && online(room).length < 2) {
     room.phase = 'lobby';
   } else if (room.phase === 'reveal') checkAllReady(room);
   else if (room.phase === 'drawing' && currentPid(room) === p.id) advance(room);
   else if (room.phase === 'voting') checkVotes(room);
-  else if (room.phase === 'guess' && p.id === room.imposterId) finish(room, null);
+  else if (room.phase === 'guess' && p.id === room.accusedId) finish(room);
+  else if (room.phase === 'validate' && !judgeId(room)) finish(room, room.pending.guess, room.pending.auto);
   broadcast(room);
 }
 
@@ -308,6 +389,9 @@ io.on('connection', (socket) => {
     if (!room || !isHost(room, me) || room.phase !== 'lobby') return;
     if ([1, 2, 3, 4].includes(s.rounds)) room.settings.rounds = s.rounds;
     if (s.category === 'mix' || WORDS[s.category]) room.settings.category = s.category;
+    if (s.roles && typeof s.roles === 'object') {
+      for (const k of Object.keys(ROLE_MIN)) if (typeof s.roles[k] === 'boolean') room.settings.roles[k] = s.roles[k];
+    }
     broadcast(room);
   });
 
@@ -387,7 +471,7 @@ io.on('connection', (socket) => {
 
   socket.on('vote', (target) => {
     const { room, me } = ctx();
-    if (!room || room.phase !== 'voting' || target === me.id || !getP(room, target)) return;
+    if (!room || room.phase !== 'voting' || target === me.id || !getP(room, target) || room.excluded.includes(target)) return;
     room.votes[me.id] = target;
     checkVotes(room);
     broadcast(room);
@@ -395,8 +479,28 @@ io.on('connection', (socket) => {
 
   socket.on('guess', (text) => {
     const { room, me } = ctx();
-    if (!room || room.phase !== 'guess' || me.id !== room.imposterId) return;
-    finish(room, String(text || '').trim().slice(0, 40));
+    if (!room || room.phase !== 'guess' || me.id !== room.accusedId) return;
+    const guess = String(text || '').trim().slice(0, 40);
+    if (!guess) return;
+    room.pending = { guess, auto: isClose(guess, room.word) };
+    room.phase = 'validate';
+    broadcast(room);
+  });
+
+  // Le Détective enquête une seule fois par partie, pendant le dessin ou le vote.
+  socket.on('inspect', (target) => {
+    const { room, me } = ctx();
+    if (!room || !['drawing', 'voting'].includes(room.phase) || roleOf(room, me.id) !== 'detective') return;
+    if (room.inspect || target === me.id || !getP(room, target)) return;
+    const r = roleOf(room, target);
+    room.inspect = { target, suspect: IMP_TEAM.includes(r) || r === 'bouffon' };
+    broadcast(room);
+  });
+
+  socket.on('judge', (accept) => {
+    const { room, me } = ctx();
+    if (!room || room.phase !== 'validate' || judgeId(room) !== me.id) return;
+    finish(room, room.pending.guess, accept === true, me.id);
     broadcast(room);
   });
 });

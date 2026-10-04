@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
   <meta name="theme-color" content="#0e0e13">
   <title>Gribouille</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%23ff5a3c'/><path d='M14 42c8-14 14-20 20-14s10 4 16-10' stroke='white' stroke-width='6' fill='none' stroke-linecap='round'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%232ee07f'/><path d='M7 42C9 22 22 10 27 19s-12 26-5 29 17-36 25-31-11 28-3 30 13-17 14-27' stroke='%2304210f' stroke-width='5' stroke-linejoin='round' fill='none' stroke-linecap='round'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -19,7 +19,7 @@
     <div class="home-wrap">
       <div class="brand">
         <div class="logo" aria-hidden="true">
-          <svg viewBox="0 0 64 64"><path d="M12 44c8-15 14-22 20-15s10 4 20-12" /></svg>
+          <svg viewBox="0 0 64 64"><path pathLength="1" d="M7 42C9 22 22 10 27 19s-12 26-5 29 17-36 25-31-11 28-3 30 13-17 14-27" /></svg>
         </div>
         <h1>Gribouille<span>.</span></h1>
         <p class="tagline">Un trait chacun. Un imposteur parmi vous.</p>
@@ -78,6 +78,10 @@
           <div><b>Catégorie</b><small>Thème du mot secret</small></div>
           <div class="chips" id="catChips"></div>
         </div>
+        <div class="setting col">
+          <div><b>Rôles spéciaux</b><small>Pour pimenter la partie, selon le nombre de joueurs</small></div>
+          <div class="role-opts" id="roleOpts"></div>
+        </div>
       </div>
 
       <div class="lobby-cta">
@@ -97,6 +101,7 @@
       <button id="roleChip" class="role-chip" title="Afficher / masquer"></button>
       <button class="btn ghost sm tb-quit" data-leave>Quitter</button>
     </header>
+    <div class="scorebar" id="scorebar" aria-label="Scores de la partie"></div>
 
     <main class="game-main">
       <div class="board-col">
@@ -104,6 +109,7 @@
         <div class="board-wrap" id="boardWrap">
           <canvas id="board"></canvas>
           <div class="board-badge" id="boardBadge"></div>
+          <div class="blind-msg"><span>🙈</span><b>Feuille cachée</b><small>Tu dessines à l'aveugle !</small></div>
         </div>
         <div class="actions" id="actions">
           <button id="clearBtn" class="btn ghost">
@@ -119,12 +125,14 @@
         <div class="panel">
           <div class="panel-head"><h2 id="sideTitle"></h2><span id="sideMeta" class="muted"></span></div>
           <p id="sideHint" class="side-hint"></p>
+          <div id="sideExtra"></div>
           <ul id="sideList" class="players compact"></ul>
         </div>
       </aside>
     </main>
 
     <button id="reopenResults" class="fab">Voir les résultats</button>
+    <button id="reopenVote" class="fab">🗳️ Voter</button>
 
     <!-- Révélation du rôle -->
     <div class="overlay" id="revealOv">
@@ -147,13 +155,33 @@
       <div class="modal">
         <span class="eyebrow danger">Démasqué !</span>
         <h2>Dernière chance</h2>
-        <p class="muted">Les autres t'ont trouvé. Devine le mot secret pour voler la victoire.</p>
+        <p class="muted" id="guessIntro">Les autres t'ont trouvé. Devine le mot secret pour voler la victoire.</p>
         <p class="cat-line" id="guessCat"></p>
         <form id="guessForm" class="guess-form">
           <input id="guessInput" maxlength="40" placeholder="Le mot secret est…" autocomplete="off">
           <button class="btn primary">Deviner</button>
         </form>
+        <p class="hint">Pas besoin d'être exact : un mot très proche peut être accepté par l'arbitre.</p>
       </div>
+    </div>
+
+    <!-- Vote -->
+    <div class="overlay" id="voteOv">
+      <div class="modal vote-modal">
+        <span class="eyebrow">Fin du dessin</span>
+        <h2>Qui est l'imposteur ?</h2>
+        <canvas id="voteThumb" class="vote-thumb"></canvas>
+        <p class="muted" id="voteMeta"></p>
+        <div id="voteNotice"></div>
+        <div id="voteExtra"></div>
+        <ul class="vote-grid" id="voteGrid"></ul>
+        <button id="hideVote" class="btn ghost block">Revoir le dessin en grand</button>
+      </div>
+    </div>
+
+    <!-- Validation du mot de l'imposteur -->
+    <div class="overlay" id="judgeOv">
+      <div class="modal" id="judgeBox"></div>
     </div>
 
     <!-- Résultats -->

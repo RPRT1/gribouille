@@ -18,8 +18,35 @@
     del(k) { try { sessionStorage.removeItem(k); } catch { /* ignore */ } }
   };
 
-  const GRID = 1000;        // doit correspondre au serveur
+  const GRID = 1000;        // doit correspondre au serveur (sur chaque axe)
   const MAX_COORDS = 4000;
+  const ASPECT = 5 / 4;     // hauteur / largeur de la feuille de dessin
+  const fmt = (n) => n.toLocaleString('fr-FR');
+
+  const ROLE_INFO = {
+    artist: { emoji: '🎨', name: 'Artiste' },
+    imposter: { emoji: '🕵️', name: 'Imposteur', bad: true },
+    detective: { emoji: '🔎', name: 'Détective', desc: 'Enquête une fois sur un joueur pour savoir s\'il est suspect.',
+      card: 'Une fois dans la partie, tu peux enquêter sur un joueur pour savoir s\'il est suspect.' },
+    aveugle: { emoji: '🙈', name: 'Aveugle', desc: 'Connaît le mot mais dessine sans voir la feuille.',
+      card: 'Quand viendra ton tour, la feuille sera cachée : tu dessineras à l\'aveugle !' },
+    complice: { emoji: '🤝', name: 'Complice', bad: true, desc: 'Connaît le mot et l\'imposteur. Gagne avec lui.',
+      card: 'Aide-le discrètement : tu gagnes si l\'imposteur s\'en sort.' },
+    bouffon: { emoji: '🃏', name: 'Bouffon', desc: 'Connaît le mot. Gagne seul s\'il se fait accuser.',
+      card: 'Tu gagnes seul si tu te fais accuser. Dessine de façon louche… mais pas trop !' },
+    gardien: { emoji: '🛡️', name: 'Gardien', desc: 'S\'il est accusé, le vote est annulé (une fois).',
+      card: 'Si tu es accusé, ton rôle est dévoilé et le vote est annulé (une seule fois).' },
+    saboteur: { emoji: '🧨', name: 'Saboteur', bad: true, desc: 'Connaît le mot, gagne si l\'imposteur s\'en sort.',
+      card: 'Tu ne sais pas qui est l\'imposteur, mais tu gagnes s\'il s\'en sort. Sème le doute !' },
+    duo: { emoji: '👥', name: 'Deux imposteurs', desc: 'Deux imposteurs qui ne se connaissent pas.' },
+    voisin: { emoji: '🔀', name: 'Mot voisin', desc: 'L\'imposteur reçoit un autre mot et ne sait pas qu\'il est l\'imposteur.' }
+  };
+  const ROLE_KEYS = ['detective', 'aveugle', 'complice', 'bouffon', 'gardien', 'saboteur', 'duo', 'voisin'];
+  function roleTag(r) {
+    if (!r || r === 'artist') return '';
+    const i = ROLE_INFO[r];
+    return `<span class="tag ${i.bad ? 'bad' : 'role'}">${r === 'imposter' ? 'imposteur' : `${i.emoji} ${i.name}`}</span>`;
+  }
 
   let pid = tab.get('fa_pid');
   if (!pid) {
@@ -39,6 +66,7 @@
   let flipped = false;
   let wordMasked = false;
   let resultsHidden = false;
+  let voteHidden = false;
   let lastKey = '';
 
   const player = (id) => S && S.players.find((p) => p.id === id);
@@ -90,6 +118,7 @@
       sentLen = 0; clearTimeout(liveTimer); liveTimer = null; layerDirty = true;
       if (String(s.game) !== prevGame) { flipped = false; wordMasked = false; highlight = null; }
       if (s.phase !== 'results') resultsHidden = false;
+      if (s.phase !== 'voting') voteHidden = false;
       if (s.phase === 'results') highlight = null;
     }
     if (s.game !== strokesGame) { strokes = []; strokesGame = s.game; layerDirty = true; }
@@ -215,17 +244,35 @@
       `<button class="${S.settings.rounds === n ? 'on' : ''}" data-r="${n}">${n}</button>`).join('');
     $$('#roundsSeg button').forEach((b) => b.onclick = () => socket.emit('settings', { rounds: +b.dataset.r }));
     const cats = ['mix', ...S.categories];
+    const total = S.categories.reduce((n, c) => n + (S.wordCounts[c] || 0), 0);
     $('#catChips').innerHTML = cats.map((c) =>
-      `<button class="chip ${S.settings.category === c ? 'on' : ''}" data-c="${esc(c)}">${c === 'mix' ? '🎲 Aléatoire' : esc(c)}</button>`).join('');
+      `<button class="chip ${S.settings.category === c ? 'on' : ''}" data-c="${esc(c)}">${c === 'mix' ? '🎲 Aléatoire' : esc(c)}<small>${fmt(c === 'mix' ? total : S.wordCounts[c] || 0)}</small></button>`).join('');
     $$('#catChips .chip').forEach((b) => b.onclick = () => socket.emit('settings', { category: b.dataset.c }));
+    $('#roleOpts').innerHTML = ROLE_KEYS.map((k) => {
+      const i = ROLE_INFO[k];
+      const enabled = S.settings.roles[k];
+      const enough = on >= S.roleMin[k];
+      return `<button class="role-opt ${enabled ? 'on' : ''} ${enough ? '' : 'short'}" data-role="${k}">
+        <span class="ro-emoji">${i.emoji}</span>
+        <span class="ro-text"><b>${i.name}</b><small>${i.desc}</small></span>
+        <span class="ro-min">${S.roleMin[k]}+</span>
+      </button>`;
+    }).join('');
+    $$('#roleOpts [data-role]').forEach((b) => b.onclick = () =>
+      socket.emit('settings', { roles: { [b.dataset.role]: !S.settings.roles[b.dataset.role] } }));
 
     const startBtn = $('#startBtn');
     startBtn.style.display = host ? '' : 'none';
     startBtn.disabled = on < 3;
     const hostP = player(S.hostId);
     $('#lobbyHint').textContent = host
-      ? (on < 3 ? `Il faut au moins 3 joueurs connectés (${on}/3)` : `${on} joueurs prêts à dessiner`)
+      ? (on < 3 ? `Il faut au moins 3 joueurs connectés (${on}/3)` : `${on} joueurs prêts à dessiner${activeRoles(on)}`)
       : `En attente que ${hostP ? hostP.name : "l'hôte"} lance la partie…`;
+  }
+
+  function activeRoles(on) {
+    const list = ROLE_KEYS.filter((k) => S.settings.roles[k] && on >= S.roleMin[k]).map((k) => ROLE_INFO[k].emoji);
+    return list.length ? ` · ${list.join(' ')}` : '';
   }
 
   /* ---------- jeu : rendu ---------- */
@@ -238,6 +285,7 @@
       }
       case 'voting': return 'Vote';
       case 'guess': return 'Dernière chance';
+      case 'validate': return 'Validation';
       case 'results': return 'Résultats';
       default: return '';
     }
@@ -254,7 +302,8 @@
       chip.innerHTML = `<span class="lbl">Imposteur ·</span><b>${esc(r.category)}</b>${eye}`;
     } else {
       chip.className = 'role-chip' + (wordMasked ? ' masked' : '');
-      chip.innerHTML = `<span class="lbl">${esc(r.category)} ·</span><b>${esc(r.word)}</b>${eye}`;
+      const tag = r.id !== 'artist' ? `${ROLE_INFO[r.id].emoji} ` : '';
+      chip.innerHTML = `<span class="lbl">${tag}${esc(r.category)} ·</span><b>${esc(r.word)}</b>${eye}`;
     }
   }
   $('#roleChip').onclick = () => { wordMasked = !wordMasked; renderRoleChip(); };
@@ -265,18 +314,23 @@
     let html = '';
     if (S.phase === 'reveal') html = 'Découvrez vos rôles…';
     else if (S.phase === 'drawing') {
-      if (myTurn()) html = cur && !drawingNow ? 'Valide ton trait ou recommence' : 'À toi ! Trace un seul trait';
+      if (myTurn()) html = cur && !drawingNow ? 'Valide ton trait ou recommence' : blind() ? 'À toi ! Dessine à l\'aveugle 🙈' : 'À toi ! Trace un seul trait';
       else if (p) html = `<span class="dot" style="background:${p.color}"></span>${esc(p.name)} dessine…`;
     } else if (S.phase === 'voting') html = S.myVote ? 'Vote enregistré — tu peux encore changer' : "Qui est l'imposteur ?";
     else if (S.phase === 'guess') {
       const a = player(S.accusedId);
-      html = S.role.isImposter ? 'Devine le mot secret !' : `${a ? esc(a.name) : "L'imposteur"} tente de deviner le mot…`;
-    } else if (S.phase === 'results') html = S.result.imposterWins ? "Victoire de l'imposteur" : 'Victoire des artistes';
+      html = S.accusedId === pid ? 'Devine le mot secret !' : `${a ? esc(a.name) : "L'imposteur"} tente de deviner le mot…`;
+    } else if (S.phase === 'validate') {
+      const j = player(S.pending.judgeId);
+      html = S.pending.judgeId === pid ? 'À toi de valider le mot proposé'
+        : `${j ? esc(j.name) : "L'arbitre"} valide « ${esc(S.pending.guess)} »…`;
+    } else if (S.phase === 'results') html = verdictOf(S.result)[1];
     st.innerHTML = html;
 
     const wrap = $('#boardWrap');
     const mine = myTurn();
     wrap.classList.toggle('mine', mine);
+    wrap.classList.toggle('blind', blind());
     if (mine) wrap.style.setProperty('--turn-color', me().color);
     const badge = $('#boardBadge');
     if (S.phase === 'drawing' && p && !mine) {
@@ -299,6 +353,7 @@
     const meta = $('#sideMeta');
     const hint = $('#sideHint');
     hint.textContent = '';
+    $('#sideExtra').innerHTML = inspectBlock();
 
     if (S.phase === 'reveal' || S.phase === 'drawing') {
       title.textContent = 'Ordre de passage';
@@ -323,11 +378,13 @@
       list.innerHTML = S.order.map((id) => {
         const p = player(id); if (!p) return '';
         const self = id === pid;
+        const safe = S.excluded.includes(id);
         return `<li class="player clickable ${highlight === id ? 'hl' : ''} ${S.myVote === id ? 'picked' : ''} ${p.connected ? '' : 'off'}" data-hl="${esc(id)}">
           ${avatar(p)}
           <span class="name">${esc(p.name)}${self ? '<small>toi</small>' : ''}</span>
+          ${safe ? roleTag('gardien') : ''}
           ${p.voted ? '<span class="tag good">a voté</span>' : ''}
-          ${self ? '' : `<button class="vote-btn" data-vote="${esc(id)}">${S.myVote === id ? 'Voté' : 'Voter'}</button>`}
+          ${self || safe ? '' : `<button class="vote-btn" data-vote="${esc(id)}">${S.myVote === id ? 'Voté' : 'Voter'}</button>`}
         </li>`;
       }).join('');
     } else {
@@ -338,11 +395,11 @@
       list.innerHTML = S.order.map((id) => {
         const p = player(id); if (!p) return '';
         const got = votes ? votesFor(id, votes) : [];
-        const imp = S.phase === 'results' && S.result.imposterId === id;
+        const tag = S.phase === 'results' ? roleTag(S.result.roles[id]) : '';
         return `<li class="player clickable ${highlight === id ? 'hl' : ''}" data-hl="${esc(id)}">
           ${avatar(p)}
           <span class="name">${esc(p.name)}${id === pid ? '<small>toi</small>' : ''}</span>
-          ${imp ? '<span class="tag bad">imposteur</span>' : ''}
+          ${tag}
           <span class="votes-count">${got.map((v) => `<i title="${esc(v.name)}" style="background:${v.color}"></i>`).join('')}</span>
         </li>`;
       }).join('');
@@ -355,7 +412,29 @@
       renderSide(); requestDraw();
     });
     list.querySelectorAll('[data-vote]').forEach((b) => b.onclick = () => socket.emit('vote', b.dataset.vote));
+    bindInspect();
   }
+
+  // Enquête du Détective : une seule fois, pendant le dessin ou le vote.
+  function inspectBlock() {
+    if (!S.role || S.role.id !== 'detective' || !['drawing', 'voting'].includes(S.phase)) return '';
+    const done = S.role.inspect;
+    if (done) {
+      const t = player(done.target);
+      return `<div class="inspect">🔎 ${esc(t ? t.name : '?')} est <b class="${done.suspect ? 'bad' : 'good'}">${done.suspect ? 'suspect' : 'innocent'}</b>
+        <small>${done.suspect ? 'Imposteur, complice, saboteur ou bouffon.' : 'Un artiste honnête.'}</small></div>`;
+    }
+    const others = S.order.filter((id) => id !== pid).map(player).filter(Boolean);
+    return `<div class="inspect"><span>🔎 Enquête (une seule fois) :</span>
+      <div class="chips">${others.map((p) => `<button class="chip" data-inspect="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div></div>`;
+  }
+  function bindInspect() {
+    $$('[data-inspect]').forEach((b) => b.onclick = () => {
+      const t = player(b.dataset.inspect);
+      if (t && confirm(`Enquêter sur ${t.name} ? Tu ne pourras le faire qu'une fois.`)) socket.emit('inspect', t.id);
+    });
+  }
+  const blind = () => myTurn() && S.role && S.role.id === 'aveugle';
 
   function renderReveal() {
     const ov = $('#revealOv');
@@ -364,16 +443,25 @@
     if (!show) return;
     const r = S.role;
     const back = $('#roleBack');
+    const duo = S.settings.roles.duo && S.order.length >= S.roleMin.duo;
+    const neighbor = r.neighbor ? '<p class="note">🔀 Mot voisin : l\'imposteur a reçu un autre mot… et ne le sait pas.</p>' : '';
     if (r.isImposter) {
       back.className = 'face back imp';
       back.innerHTML = `<div class="imp-icon">🕵️</div><span class="eyebrow">Ton rôle</span>
         <div class="secret-word">Imposteur</div><span class="cat">Catégorie : ${esc(r.category)}</span>
-        <p>Tu ne connais pas le mot. Observe les traits des autres et dessine comme si tu savais.</p>`;
+        <p>Tu ne connais pas le mot. Observe les traits des autres et dessine comme si tu savais.</p>
+        ${duo ? '<p class="note">👥 Un autre imposteur rôde aussi, mais tu ne sais pas qui.</p>' : ''}`;
     } else {
-      back.className = 'face back';
-      back.innerHTML = `<span class="eyebrow">Le mot secret</span>
+      const i = ROLE_INFO[r.id];
+      let text = i.card || 'Dessine-le subtilement : assez pour prouver que tu le connais, pas assez pour aider l\'imposteur.';
+      if (r.id === 'complice') {
+        const names = (r.partners || []).map(player).filter(Boolean).map((p) => `<b>${esc(p.name)}</b>`).join(' et ');
+        text = `${(r.partners || []).length > 1 ? 'Les imposteurs sont' : 'L\'imposteur est'} ${names}. ${text}`;
+      }
+      back.className = 'face back' + (i.bad ? ' bad' : '');
+      back.innerHTML = `<span class="eyebrow">${r.id === 'artist' ? 'Le mot secret' : `${i.emoji} Tu es ${i.name}`}</span>
         <div class="secret-word">${esc(r.word)}</div><span class="cat">${esc(r.category)}</span>
-        <p>Dessine-le subtilement : assez pour prouver que tu le connais, pas assez pour aider l'imposteur.</p>`;
+        <p>${text}</p>${neighbor}`;
     }
     $('#flipCard').classList.toggle('open', flipped);
     const ready = me() && me().ready;
@@ -387,12 +475,15 @@
   $('#readyBtn').onclick = () => socket.emit('ready');
 
   function renderGuess() {
-    const show = S.phase === 'guess' && S.role.isImposter;
+    const show = S.phase === 'guess' && S.accusedId === pid;
     const ov = $('#guessOv');
     const was = ov.classList.contains('show');
     ov.classList.toggle('show', show);
     if (show) {
       $('#guessCat').innerHTML = `Catégorie : <b>${esc(S.role.category)}</b>`;
+      $('#guessIntro').innerHTML = S.role.decoy
+        ? `Surprise : tu étais l'imposteur ! Ton mot « ${esc(S.role.decoy)} » n'était pas le bon. Devine le vrai mot pour voler la victoire.`
+        : "Les autres t'ont trouvé. Devine le mot secret pour voler la victoire.";
       if (!was) { $('#guessInput').value = ''; setTimeout(() => $('#guessInput').focus(), 50); }
     }
   }
@@ -409,32 +500,37 @@
     $('#reopenResults').classList.toggle('show', isRes && resultsHidden);
     if (!isRes) return;
     const R = S.result;
-    const imp = player(R.imposterId) || { name: '?', color: '#666' };
+    const two = R.imposterIds.length > 1;
+    const impNames = R.imposterIds.map(player).filter(Boolean).map((p) => esc(p.name)).join(' et ') || '?';
+    const wasImp = two ? `${impNames} étaient les imposteurs` : `${impNames} était l'imposteur`;
     const accused = player(R.accusedId);
-    const iAmImp = R.imposterId === pid;
-    const iWon = iAmImp ? R.imposterWins : !R.imposterWins;
+    const accName = esc(accused ? accused.name : '?');
+    const iWon = !!R.deltas[pid];
 
+    const judge = player(R.judgeId);
+    const judgedBy = judge ? ` (arbitre : ${esc(judge.name)})` : '';
     let detail;
-    if (R.tie) detail = `Égalité dans les votes : personne n'est accusé et ${esc(imp.name)} s'échappe.`;
-    else if (!R.caught) detail = `Vous avez accusé ${esc(accused ? accused.name : '?')} à tort. ${esc(imp.name)} était l'imposteur !`;
-    else if (R.guessCorrect) detail = `${esc(imp.name)} a été démasqué·e mais a deviné « ${esc(R.guess)} ». Bien joué !`;
-    else if (R.guess) detail = `${esc(imp.name)} a été démasqué·e et a proposé « ${esc(R.guess)} »… raté !`;
-    else detail = `${esc(imp.name)} a été démasqué·e et n'a pas trouvé le mot.`;
+    if (R.winner === 'bouffon') detail = `${accName} était le Bouffon et voulait justement se faire accuser ! ${wasImp}.`;
+    else if (R.tie) detail = `Égalité dans les votes : personne n'est accusé et ${impNames} s'échappe${two ? 'nt' : ''}.`;
+    else if (!R.caught) detail = `Vous avez accusé ${accName} à tort. ${wasImp} !`;
+    else if (R.guessCorrect) detail = `${accName} a été démasqué·e mais a proposé « ${esc(R.guess)} »${judgedBy} : accepté. Bien joué !`;
+    else if (R.guess) detail = `${accName} a été démasqué·e et a proposé « ${esc(R.guess)} »${judgedBy} : refusé !`;
+    else detail = `${accName} a été démasqué·e et n'a pas trouvé le mot.`;
+    if (R.caught && two) detail += ` L'autre imposteur : ${R.imposterIds.filter((id) => id !== R.accusedId).map(player).filter(Boolean).map((p) => esc(p.name)).join('')}.`;
+    if (R.decoy) detail += ` Le mot voisin de l'imposteur était « ${esc(R.decoy)} ».`;
+    const g = player(R.gardienId);
+    if (g) detail += ` 🛡️ ${esc(g.name)}, le Gardien, a fait annuler un vote.`;
 
     const ranking = S.players.slice().sort((a, b) => b.score - a.score);
-    const delta = (p) => {
-      const isImp = p.id === R.imposterId;
-      if (isImp && R.imposterWins) return '+2';
-      if (!isImp && !R.imposterWins) return '+1';
-      return '';
-    };
+    const delta = (p) => (R.deltas[p.id] ? `+${R.deltas[p.id]}` : '');
+    const [badge, title, cls] = verdictOf(R);
 
     const host = isHost();
     $('#resultBox').innerHTML = `
-      <div class="verdict ${R.imposterWins ? 'imp' : ''}">
-        <div class="badge">${R.imposterWins ? '🕵️' : '🎨'}</div>
+      <div class="verdict ${cls}">
+        <div class="badge">${badge}</div>
         <span class="eyebrow">${iWon ? 'Tu as gagné' : 'Tu as perdu'}</span>
-        <h2>${R.imposterWins ? "L'imposteur l'emporte" : 'Les artistes gagnent'}</h2>
+        <h2>${title}</h2>
         <p>${detail}</p>
       </div>
       <div class="word-reveal"><span>Le mot était · ${esc(R.category)}</span><b>${esc(R.word)}</b></div>
@@ -442,12 +538,15 @@
         <li class="player">
           <span class="pos">${i + 1}</span>${avatar(p)}
           <span class="name">${esc(p.name)}${p.id === pid ? '<small>toi</small>' : ''}</span>
-          ${p.id === R.imposterId ? '<span class="tag bad">imposteur</span>' : ''}
+          ${roleTag(R.roles[p.id])}
           <span class="delta">${delta(p)}</span>
           <span class="score">${p.score}</span>
         </li>`).join('')}
       </ul>
       <div class="result-actions">
+        <button class="btn ghost full" id="exportBtn">
+          <svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>Enregistrer le dessin
+        </button>
         <button class="btn ghost ${host ? '' : 'full'}" id="seeDrawing">Voir le dessin</button>
         ${host ? '<button class="btn primary" id="againBtn">Rejouer</button><button class="btn ghost full sm" id="lobbyBtn">Retour au salon</button>'
                : ''}
@@ -455,21 +554,187 @@
       ${host ? '' : '<p class="hint">En attente de l\'hôte pour la manche suivante…</p>'}
     `;
     $('#seeDrawing').onclick = () => { resultsHidden = true; renderResults(); };
+    $('#exportBtn').onclick = exportDrawing;
     if (host) {
       $('#againBtn').onclick = () => socket.emit('start', (res) => { if (res && res.error) toast(res.error); });
       $('#lobbyBtn').onclick = () => socket.emit('toLobby');
     }
   }
   $('#reopenResults').onclick = () => { resultsHidden = false; renderResults(); };
+  function verdictOf(R) {
+    if (R.winner === 'bouffon') return ['🃏', 'Le Bouffon gagne !', 'imp'];
+    if (R.winner === 'imposters') return ['🕵️', R.imposterIds.length > 1 ? "Les imposteurs l'emportent" : "L'imposteur l'emporte", 'imp'];
+    return ['🎨', 'Les artistes gagnent', ''];
+  }
+
+  function renderScorebar() {
+    const ranking = S.players.slice().sort((a, b) => b.score - a.score);
+    const top = ranking[0] && ranking[0].score;
+    const leaders = ranking.filter((p) => p.score === top).length;
+    $('#scorebar').innerHTML = ranking.map((p) => `
+      <span class="sb-item ${p.id === pid ? 'me' : ''} ${p.connected ? '' : 'off'}">
+        ${top > 0 && leaders === 1 && p.score === top ? '<span class="crown">👑</span>' : ''}
+        <span class="sb-dot" style="background:${p.color}"></span>
+        <span class="sb-name">${esc(p.name)}</span><b>${p.score}</b>
+      </span>`).join('');
+  }
+
+  function renderVote() {
+    const show = S.phase === 'voting';
+    $('#voteOv').classList.toggle('show', show && !voteHidden);
+    $('#reopenVote').classList.toggle('show', show && voteHidden);
+    if (!show || voteHidden) return;
+    const voters = S.players.filter((p) => p.connected);
+    $('#voteMeta').textContent = `${voters.filter((p) => p.voted).length} / ${voters.length} votes`
+      + (S.myVote ? ' · tu peux encore changer' : '');
+    $('#voteGrid').innerHTML = S.order.map((id) => {
+      const p = player(id); if (!p) return '';
+      const self = id === pid;
+      const safe = S.excluded.includes(id);
+      return `<li><button class="vote-card ${S.myVote === id ? 'picked' : ''} ${p.connected ? '' : 'off'}" data-vote="${esc(id)}" ${self || safe ? 'disabled' : ''}>
+        ${avatar(p)}<span class="vc-name">${esc(p.name)}</span>
+        <small>${safe ? '🛡️ Gardien' : self ? 'toi' : S.myVote === id ? 'ton vote' : p.voted ? 'a voté' : '&nbsp;'}</small>
+      </button></li>`;
+    }).join('');
+    $$('#voteGrid [data-vote]').forEach((b) => b.onclick = () => socket.emit('vote', b.dataset.vote));
+    const g = player(S.gardienId);
+    $('#voteNotice').innerHTML = g ? `<p class="notice">🛡️ ${esc(g.name)} était le Gardien : vote annulé, revotez !</p>` : '';
+    $('#voteExtra').innerHTML = inspectBlock();
+    bindInspect();
+    drawThumb();
+  }
+  function drawThumb() {
+    const c = $('#voteThumb');
+    const w = Math.round(c.clientWidth * Math.min(window.devicePixelRatio || 1, 2));
+    if (!w) return;
+    c.width = w; c.height = Math.round(w * ASPECT);
+    const t = c.getContext('2d');
+    for (const st of strokes) strokePath(t, st.points, st.color);
+    t.globalAlpha = 1;
+  }
+  $('#hideVote').onclick = () => { voteHidden = true; renderVote(); };
+  $('#reopenVote').onclick = () => { voteHidden = false; renderVote(); };
+
+  function renderJudge() {
+    const P = S.pending;
+    const isJudge = S.phase === 'validate' && P.judgeId === pid;
+    const isImp = S.phase === 'validate' && S.accusedId === pid;
+    $('#judgeOv').classList.toggle('show', isJudge || isImp);
+    if (!isJudge && !isImp) return;
+    const imp = player(S.accusedId);
+    const judge = player(P.judgeId);
+    if (isJudge) {
+      $('#judgeBox').innerHTML = `
+        <span class="eyebrow">Tu es l'arbitre</span>
+        <h2>« ${esc(P.guess)} »</h2>
+        <p class="muted">${esc(imp ? imp.name : "L'imposteur")} propose ce mot. Est-ce assez proche du mot secret ?</p>
+        <div class="word-reveal"><span>Le mot secret</span><b>${esc(S.role.word)}</b></div>
+        <p class="auto ${P.auto ? 'good' : 'bad'}">${P.auto ? '✓ Très proche, ça devrait passer' : '✗ Assez différent du mot secret'}</p>
+        <div class="result-actions">
+          <button class="btn ghost" id="judgeNo">Refuser</button>
+          <button class="btn primary" id="judgeYes">Accepter</button>
+        </div>`;
+      $('#judgeNo').onclick = () => socket.emit('judge', false);
+      $('#judgeYes').onclick = () => socket.emit('judge', true);
+    } else {
+      $('#judgeBox').innerHTML = `
+        <span class="eyebrow">Mot proposé</span>
+        <h2>« ${esc(P.guess)} »</h2>
+        <p class="muted">${esc(judge ? judge.name : "L'arbitre")} vérifie si ton mot est assez proche du mot secret…</p>
+        <div class="spinner" aria-hidden="true"></div>`;
+    }
+  }
+
+  const normWord = (w) => w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  /* ---------- export du dessin ---------- */
+  function exportDrawing() {
+    const W = 1200, H = Math.round(W * ASPECT), PAD = 56;
+    const R = S.result;
+    const art = document.createElement('canvas');
+    art.width = W; art.height = H;
+    const a = art.getContext('2d');
+    for (const st of strokes) strokePath(a, st.points, st.color);
+
+    // Légende : un point de couleur par artiste, sur plusieurs lignes si besoin.
+    const out = document.createElement('canvas');
+    const c = out.getContext('2d');
+    const legendFont = '600 26px Inter, system-ui, sans-serif';
+    c.font = legendFont;
+    const rows = [[]];
+    let x = 0;
+    for (const id of S.order) {
+      const p = player(id); if (!p) continue;
+      const w = 30 + c.measureText(p.name).width + 28;
+      if (x + w > W && rows[rows.length - 1].length) { rows.push([]); x = 0; }
+      rows[rows.length - 1].push({ p, x });
+      x += w;
+    }
+    const FOOT = 110 + rows.length * 40 + 50;
+    out.width = W + PAD * 2; out.height = H + PAD * 2 + FOOT;
+
+    c.fillStyle = '#fbf8f1';
+    c.fillRect(0, 0, out.width, out.height);
+    c.fillStyle = 'rgba(0, 0, 0, .07)';
+    for (let gx = PAD + 13; gx < PAD + W; gx += 26) for (let gy = PAD + 13; gy < PAD + H; gy += 26) {
+      c.beginPath(); c.arc(gx, gy, 1.6, 0, Math.PI * 2); c.fill();
+    }
+    c.drawImage(art, PAD, PAD);
+    c.strokeStyle = 'rgba(0, 0, 0, .1)'; c.lineWidth = 2;
+    c.strokeRect(PAD, PAD, W, H);
+
+    let y = PAD + H + 84;
+    c.fillStyle = '#1a1a1f';
+    c.font = '800 60px "Bricolage Grotesque", Inter, sans-serif';
+    c.fillText(R ? R.word : 'Gribouille', PAD, y);
+    c.font = legendFont;
+    y += 22;
+    for (const row of rows) {
+      y += 40;
+      for (const { p, x: lx } of row) {
+        c.fillStyle = p.color;
+        c.beginPath(); c.arc(PAD + lx + 11, y - 9, 11, 0, Math.PI * 2); c.fill();
+        c.fillStyle = '#3a3830';
+        c.fillText(p.name, PAD + lx + 30, y);
+      }
+    }
+    c.fillStyle = '#8a8578';
+    c.font = '500 24px Inter, system-ui, sans-serif';
+    const date = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+    c.fillText(`Gribouille · ${R ? R.category + ' · ' : ''}${date}`, PAD, y + 52);
+
+    // Conversion synchrone : le partage doit partir dans la foulée du clic (Safari).
+    const bin = atob(out.toDataURL('image/png').split(',')[1]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const slug = normWord(R ? R.word : 'dessin').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const name = `gribouille-${slug || 'dessin'}.png`;
+    const download = () => {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+      toast('Dessin téléchargé');
+    };
+    const file = new File([blob], name, { type: 'image/png' });
+    if (matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: 'Mon Gribouille' }).catch((e) => { if (e.name !== 'AbortError') download(); });
+    } else download();
+  }
 
   function renderGame() {
     $('#gCode').textContent = S.code;
     $('#gPhase').textContent = phaseLabel();
+    renderScorebar();
     renderRoleChip();
     renderStatus();
     renderSide();
     renderReveal();
     renderGuess();
+    renderVote();
+    renderJudge();
     renderResults();
     resizeBoard();
   }
@@ -480,8 +745,7 @@
     if (screen === 'lobby') renderLobby();
     if (screen === 'game') renderGame();
     if (screen !== 'game') {
-      $$('.overlay').forEach((o) => o.classList.remove('show'));
-      $('#reopenResults').classList.remove('show');
+      $$('#game .overlay, #game .fab').forEach((o) => o.classList.remove('show'));
       document.title = 'Gribouille';
     }
   }
@@ -496,7 +760,8 @@
     if (!r.width) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
     const w = Math.round(r.width * dpr);
-    if (w !== board.width) { board.width = w; board.height = w; }
+    const h = Math.round(w * ASPECT);
+    if (w !== board.width || h !== board.height) { board.width = w; board.height = h; }
     requestDraw();
   }
   new ResizeObserver(resizeBoard).observe(board);
@@ -516,7 +781,7 @@
   function strokePath(c, pts, color, alpha = 1) {
     const n = pts.length / 2;
     if (!n) return;
-    const s = c.canvas.width / GRID;
+    const sx = c.canvas.width / GRID, sy = c.canvas.height / GRID;
     const lw = c.canvas.width * 0.012;
     c.globalAlpha = alpha;
     c.strokeStyle = color;
@@ -526,17 +791,17 @@
     c.lineJoin = 'round';
     c.beginPath();
     if (n === 1) {
-      c.arc(pts[0] * s, pts[1] * s, lw / 2, 0, Math.PI * 2);
+      c.arc(pts[0] * sx, pts[1] * sy, lw / 2, 0, Math.PI * 2);
       c.fill();
       return;
     }
-    c.moveTo(pts[0] * s, pts[1] * s);
+    c.moveTo(pts[0] * sx, pts[1] * sy);
     for (let i = 1; i < n - 1; i++) {
-      const x = pts[i * 2] * s, y = pts[i * 2 + 1] * s;
-      const nx = pts[i * 2 + 2] * s, ny = pts[i * 2 + 3] * s;
+      const x = pts[i * 2] * sx, y = pts[i * 2 + 1] * sy;
+      const nx = pts[i * 2 + 2] * sx, ny = pts[i * 2 + 3] * sy;
       c.quadraticCurveTo(x, y, (x + nx) / 2, (y + ny) / 2);
     }
-    c.lineTo(pts[(n - 1) * 2] * s, pts[(n - 1) * 2 + 1] * s);
+    c.lineTo(pts[(n - 1) * 2] * sx, pts[(n - 1) * 2 + 1] * sy);
     c.stroke();
   }
 
@@ -544,8 +809,8 @@
     drawQueued = false;
     ctx.globalAlpha = 1;
     ctx.clearRect(0, 0, board.width, board.height);
-    if (!S || S.phase === 'lobby') return;
-    if (layer.width !== board.width) { layer.width = board.width; layer.height = board.height; layerDirty = true; }
+    if (!S || S.phase === 'lobby' || blind()) return;
+    if (layer.width !== board.width || layer.height !== board.height) { layer.width = board.width; layer.height = board.height; layerDirty = true; }
     if (layerDirty) {
       layerDirty = false;
       lctx.clearRect(0, 0, layer.width, layer.height);
