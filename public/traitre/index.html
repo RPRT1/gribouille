@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#0e0e13">
+  <title>Traître</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%23b18cff'/><path d='M6 27c6-7 18-8 26-2 8-6 20-5 26 2-1 11-7 18-14 17-5-1-8-6-12-6s-7 5-12 6C13 45 7 38 6 27zM15 31c3-4 9-4 11 0-3 3-8 3-11 0zM38 31c2-4 8-4 11 0-3 3-8 3-11 0z' stroke='%231b0b3a' stroke-width='4.5' stroke-linejoin='round' fill='none' stroke-linecap='round'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="theme-traitre">
+  <div class="bg-deco" aria-hidden="true"></div>
+
+  <!-- ============ ACCUEIL ============ -->
+  <section id="home" class="screen">
+    <div class="home-wrap">
+      <a class="back-link" href="/">← Tous les jeux</a>
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg viewBox="0 0 64 64"><path pathLength="1" d="M6 27c6-7 18-8 26-2 8-6 20-5 26 2-1 11-7 18-14 17-5-1-8-6-12-6s-7 5-12 6C13 45 7 38 6 27zM15 31c3-4 9-4 11 0-3 3-8 3-11 0zM38 31c2-4 8-4 11 0-3 3-8 3-11 0z" /></svg>
+        </div>
+        <h1>Traître<span>.</span></h1>
+        <p class="tagline">Des questions, un chrono. Et un traître qui sait tout.</p>
+      </div>
+
+      <div class="card home-card">
+        <label class="field">
+          <span>Ton pseudo</span>
+          <input id="nameInput" maxlength="16" placeholder="Ex : Sherlock" autocomplete="off">
+        </label>
+        <button id="createBtn" class="btn primary lg block">Créer une partie</button>
+        <div class="sep"><span>ou rejoindre avec un code</span></div>
+        <div class="join-row">
+          <input id="codeInput" class="code-input" maxlength="4" placeholder="ABCD" autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <button id="joinBtn" class="btn">Rejoindre</button>
+        </div>
+      </div>
+
+      <ol class="rules">
+        <li><b>1</b><div><h3>Le Maître du jeu</h3><p>Il connaît le mot secret et ne répond que par oui ou par non. Tout le monde sait qui il est.</p></div></li>
+        <li><b>2</b><div><h3>Trouvez le mot à temps</h3><p>Posez des questions fermées avant la fin du chrono. Si personne ne trouve, tout le monde perd.</p></div></li>
+        <li><b>3</b><div><h3>Démasquez le traître</h3><p>L'un de vous connaissait le mot depuis le début et vous a guidés en douce. Votez pour le trouver !</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ SALON ============ -->
+  <section id="lobby" class="screen">
+    <header class="topbar">
+      <button class="btn ghost sm" data-leave>← Quitter</button>
+      <div class="brand-sm">Traître<span>.</span></div>
+      <span class="tb-spacer"></span>
+    </header>
+    <div class="lobby-wrap">
+      <div class="code-card">
+        <span class="eyebrow">Code de la partie</span>
+        <button id="codeBig" class="code-big" title="Copier le code"></button>
+        <div class="code-actions">
+          <button id="copyCode" class="btn ghost sm">Copier le code</button>
+          <button id="copyLink" class="btn ghost sm">Partager le lien</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Joueurs</h2><span id="playerCount" class="muted"></span></div>
+        <ul id="playerList" class="players"></ul>
+      </div>
+
+      <div class="panel" id="settingsPanel">
+        <div class="panel-head"><h2>Réglages</h2><span id="settingsNote" class="muted"></span></div>
+        <div class="setting">
+          <div><b>Chrono</b><small>Temps pour trouver le mot</small></div>
+          <div class="seg seg-wide" id="timerSeg"></div>
+        </div>
+        <div class="setting col">
+          <div><b>Catégorie</b><small>Thème du mot secret (connu de tous)</small></div>
+          <div class="chips" id="catChips"></div>
+        </div>
+      </div>
+
+      <div class="lobby-cta">
+        <button id="startBtn" class="btn primary lg block">Lancer la partie</button>
+        <p id="lobbyHint" class="hint"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ JEU ============ -->
+  <section id="game" class="screen">
+    <header class="topbar">
+      <div class="tb-left">
+        <span class="pill mono" id="gCode"></span>
+        <span class="pill" id="gPhase"></span>
+      </div>
+      <button id="roleChip" class="role-chip" title="Afficher / masquer"></button>
+      <button class="btn ghost sm tb-quit" data-leave>Quitter</button>
+    </header>
+    <div class="scorebar" id="scorebar" aria-label="Scores de la partie"></div>
+
+    <main class="game-main">
+      <div class="t-col">
+        <div class="timer-card" id="timerCard">
+          <div class="timer-top">
+            <span class="eyebrow" id="timerLabel"></span>
+            <span class="timer" id="timer">0:00</span>
+          </div>
+          <div class="timer-bar"><i id="timerBar"></i></div>
+        </div>
+        <div class="status" id="status"></div>
+        <ul class="feed" id="feed"></ul>
+        <form class="ask-form" id="askForm">
+          <input id="askInput" maxlength="120" placeholder="Pose une question fermée… (Est-ce que ça vole ?)" autocomplete="off">
+          <button class="btn primary">Demander</button>
+        </form>
+        <button id="foundBtn" class="btn primary lg block">🎯 Quelqu'un a trouvé le mot !</button>
+      </div>
+
+      <aside class="side">
+        <div class="panel">
+          <div class="panel-head"><h2 id="sideTitle">Joueurs</h2><span id="sideMeta" class="muted"></span></div>
+          <ul id="sideList" class="players compact"></ul>
+        </div>
+      </aside>
+    </main>
+
+    <button id="reopenResults" class="fab">Voir les résultats</button>
+    <button id="reopenVote" class="fab">🗳️ Voter</button>
+
+    <!-- Révélation du rôle -->
+    <div class="overlay" id="revealOv">
+      <div class="reveal">
+        <div class="flip" id="flipCard">
+          <div class="face front">
+            <div class="q">?</div>
+            <h3>Ton rôle t'attend</h3>
+            <p>Assure-toi que personne ne regarde ton écran, puis touche la carte.</p>
+          </div>
+          <div class="face back" id="roleBack"></div>
+        </div>
+        <button id="readyBtn" class="btn primary lg block">C'est noté, je suis prêt</button>
+        <p id="readyInfo" class="hint center"></p>
+      </div>
+    </div>
+
+    <!-- Qui a trouvé ? (Maître du jeu) -->
+    <div class="overlay" id="finderOv">
+      <div class="modal">
+        <span class="eyebrow">Mot trouvé</span>
+        <h2>Qui l'a trouvé ?</h2>
+        <ul class="vote-grid" id="finderGrid"></ul>
+        <button id="finderCancel" class="btn ghost block">Annuler</button>
+      </div>
+    </div>
+
+    <!-- Vote -->
+    <div class="overlay" id="voteOv">
+      <div class="modal vote-modal">
+        <span class="eyebrow" id="voteTimer"></span>
+        <h2>Qui est le traître ?</h2>
+        <div class="word-reveal" id="voteWord"></div>
+        <p class="muted" id="voteMeta"></p>
+        <ul class="vote-grid" id="voteGrid"></ul>
+        <button id="hideVote" class="btn ghost block">Revoir les questions</button>
+      </div>
+    </div>
+
+    <!-- Résultats -->
+    <div class="overlay" id="resultOv">
+      <div class="modal results" id="resultBox"></div>
+    </div>
+  </section>
+
+  <div id="toast" role="status"></div>
+
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

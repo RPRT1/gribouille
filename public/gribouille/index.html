@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#0e0e13">
+  <title>Gribouille</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%232ee07f'/><path d='M7 42C9 22 22 10 27 19s-12 26-5 29 17-36 25-31-11 28-3 30 13-17 14-27' stroke='%2304210f' stroke-width='5' stroke-linejoin='round' fill='none' stroke-linecap='round'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="bg-deco" aria-hidden="true"></div>
+
+  <!-- ============ ACCUEIL ============ -->
+  <section id="home" class="screen">
+    <div class="home-wrap">
+      <a class="back-link" href="/">← Tous les jeux</a>
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg viewBox="0 0 64 64"><path pathLength="1" d="M7 42C9 22 22 10 27 19s-12 26-5 29 17-36 25-31-11 28-3 30 13-17 14-27" /></svg>
+        </div>
+        <h1>Gribouille<span>.</span></h1>
+        <p class="tagline">Un trait chacun. Un imposteur parmi vous.</p>
+      </div>
+
+      <div class="card home-card">
+        <label class="field">
+          <span>Ton pseudo</span>
+          <input id="nameInput" maxlength="16" placeholder="Ex : Picasso" autocomplete="off">
+        </label>
+        <button id="createBtn" class="btn primary lg block">Créer une partie</button>
+        <div class="sep"><span>ou rejoindre avec un code</span></div>
+        <div class="join-row">
+          <input id="codeInput" class="code-input" maxlength="4" placeholder="ABCD" autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <button id="joinBtn" class="btn">Rejoindre</button>
+        </div>
+      </div>
+
+      <ol class="rules">
+        <li><b>1</b><div><h3>Le mot secret</h3><p>Tout le monde reçoit le même mot… sauf l'imposteur, qui ne connaît que la catégorie.</p></div></li>
+        <li><b>2</b><div><h3>Un trait chacun</h3><p>À tour de rôle, tracez un seul trait sans lever le doigt pour dessiner le mot.</p></div></li>
+        <li><b>3</b><div><h3>Démasquez-le</h3><p>Votez pour l'imposteur. S'il est pris, il peut encore gagner en devinant le mot.</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ SALON ============ -->
+  <section id="lobby" class="screen">
+    <header class="topbar">
+      <button class="btn ghost sm" data-leave>← Quitter</button>
+      <div class="brand-sm">Gribouille<span>.</span></div>
+      <span class="tb-spacer"></span>
+    </header>
+    <div class="lobby-wrap">
+      <div class="code-card">
+        <span class="eyebrow">Code de la partie</span>
+        <button id="codeBig" class="code-big" title="Copier le code"></button>
+        <div class="code-actions">
+          <button id="copyCode" class="btn ghost sm">Copier le code</button>
+          <button id="copyLink" class="btn ghost sm">Partager le lien</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Joueurs</h2><span id="playerCount" class="muted"></span></div>
+        <ul id="playerList" class="players"></ul>
+      </div>
+
+      <div class="panel" id="settingsPanel">
+        <div class="panel-head"><h2>Réglages</h2><span id="settingsNote" class="muted"></span></div>
+        <div class="setting">
+          <div><b>Tours de dessin</b><small>Nombre de traits par joueur</small></div>
+          <div class="seg" id="roundsSeg"></div>
+        </div>
+        <div class="setting col">
+          <div><b>Catégorie</b><small>Thème du mot secret</small></div>
+          <div class="chips" id="catChips"></div>
+        </div>
+        <div class="setting col">
+          <div><b>Rôles spéciaux</b><small>Pour pimenter la partie, selon le nombre de joueurs</small></div>
+          <div class="role-opts" id="roleOpts"></div>
+        </div>
+      </div>
+
+      <div class="lobby-cta">
+        <button id="startBtn" class="btn primary lg block">Lancer la partie</button>
+        <p id="lobbyHint" class="hint"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ JEU ============ -->
+  <section id="game" class="screen">
+    <header class="topbar">
+      <div class="tb-left">
+        <span class="pill mono" id="gCode"></span>
+        <span class="pill" id="gPhase"></span>
+      </div>
+      <button id="roleChip" class="role-chip" title="Afficher / masquer"></button>
+      <button class="btn ghost sm tb-quit" data-leave>Quitter</button>
+    </header>
+    <div class="scorebar" id="scorebar" aria-label="Scores de la partie"></div>
+
+    <main class="game-main">
+      <div class="board-col">
+        <div class="status" id="status"></div>
+        <div class="board-wrap" id="boardWrap">
+          <canvas id="board"></canvas>
+          <div class="board-badge" id="boardBadge"></div>
+          <div class="blind-msg"><span>🙈</span><b>Feuille cachée</b><small>Tu dessines à l'aveugle !</small></div>
+        </div>
+        <div class="actions" id="actions">
+          <button id="clearBtn" class="btn ghost">
+            <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>Recommencer
+          </button>
+          <button id="submitBtn" class="btn primary">
+            <svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Valider mon trait
+          </button>
+        </div>
+      </div>
+
+      <aside class="side">
+        <div class="panel">
+          <div class="panel-head"><h2 id="sideTitle"></h2><span id="sideMeta" class="muted"></span></div>
+          <p id="sideHint" class="side-hint"></p>
+          <div id="sideExtra"></div>
+          <ul id="sideList" class="players compact"></ul>
+        </div>
+      </aside>
+    </main>
+
+    <button id="reopenResults" class="fab">Voir les résultats</button>
+    <button id="reopenVote" class="fab">🗳️ Voter</button>
+
+    <!-- Révélation du rôle -->
+    <div class="overlay" id="revealOv">
+      <div class="reveal">
+        <div class="flip" id="flipCard">
+          <div class="face front">
+            <div class="q">?</div>
+            <h3>Ton rôle t'attend</h3>
+            <p>Assure-toi que personne ne regarde ton écran, puis touche la carte.</p>
+          </div>
+          <div class="face back" id="roleBack"></div>
+        </div>
+        <button id="readyBtn" class="btn primary lg block">C'est noté, je suis prêt</button>
+        <p id="readyInfo" class="hint center"></p>
+      </div>
+    </div>
+
+    <!-- Devinette de l'imposteur -->
+    <div class="overlay" id="guessOv">
+      <div class="modal">
+        <span class="eyebrow danger">Démasqué !</span>
+        <h2>Dernière chance</h2>
+        <p class="muted" id="guessIntro">Les autres t'ont trouvé. Devine le mot secret pour voler la victoire.</p>
+        <p class="cat-line" id="guessCat"></p>
+        <form id="guessForm" class="guess-form">
+          <input id="guessInput" maxlength="40" placeholder="Le mot secret est…" autocomplete="off">
+          <button class="btn primary">Deviner</button>
+        </form>
+        <p class="hint">Pas besoin d'être exact : un mot très proche peut être accepté par l'arbitre.</p>
+      </div>
+    </div>
+
+    <!-- Vote -->
+    <div class="overlay" id="voteOv">
+      <div class="modal vote-modal">
+        <span class="eyebrow">Fin du dessin</span>
+        <h2>Qui est l'imposteur ?</h2>
+        <canvas id="voteThumb" class="vote-thumb"></canvas>
+        <p class="muted" id="voteMeta"></p>
+        <div id="voteNotice"></div>
+        <div id="voteExtra"></div>
+        <ul class="vote-grid" id="voteGrid"></ul>
+        <button id="hideVote" class="btn ghost block">Revoir le dessin en grand</button>
+      </div>
+    </div>
+
+    <!-- Validation du mot de l'imposteur -->
+    <div class="overlay" id="judgeOv">
+      <div class="modal" id="judgeBox"></div>
+    </div>
+
+    <!-- Résultats -->
+    <div class="overlay" id="resultOv">
+      <div class="modal results" id="resultBox"></div>
+    </div>
+  </section>
+
+  <div id="toast" role="status"></div>
+
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
